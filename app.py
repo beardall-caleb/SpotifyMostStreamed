@@ -15,15 +15,6 @@ def create_connection():
 def create_tables(conn):
     """Reset and create the app's database tables."""
 
-    # For development
-    conn.execute("DROP TABLE IF EXISTS artist_rankings")
-    conn.execute("DROP TABLE IF EXISTS album_rankings")
-    conn.execute("DROP TABLE IF EXISTS song_rankings")
-    conn.execute("DROP TABLE IF EXISTS features")
-    conn.execute("DROP TABLE IF EXISTS songs")
-    conn.execute("DROP TABLE IF EXISTS albums")
-    conn.execute("DROP TABLE IF EXISTS artists")
-
     # Artists table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS artists (
@@ -82,7 +73,7 @@ def create_tables(conn):
         CREATE TABLE IF NOT EXISTS artist_rankings (
             artist_id INTEGER PRIMARY KEY,
             rank INTEGER NOT NULL UNIQUE
-                CHECK (rank BETWEEN 1 AND 20),
+                CHECK (rank BETWEEN 1 AND 20 OR rank = 99),
 
             FOREIGN KEY (artist_id)
                 REFERENCES artists(id)
@@ -94,7 +85,7 @@ def create_tables(conn):
         CREATE TABLE IF NOT EXISTS album_rankings (
             album_id INTEGER PRIMARY KEY,
             rank INTEGER NOT NULL UNIQUE
-                CHECK (rank BETWEEN 1 AND 20),
+                CHECK (rank BETWEEN 1 AND 20 OR rank = 99),
 
             FOREIGN KEY (album_id)
                 REFERENCES albums(id)
@@ -106,7 +97,7 @@ def create_tables(conn):
         CREATE TABLE IF NOT EXISTS song_rankings (
             song_id INTEGER PRIMARY KEY,
             rank INTEGER NOT NULL UNIQUE
-                CHECK (rank BETWEEN 1 AND 20),
+                CHECK (rank BETWEEN 1 AND 20 OR rank = 99),
 
             FOREIGN KEY (song_id)
                 REFERENCES songs(id)
@@ -440,12 +431,316 @@ def get_song_id(conn, artist_name, title):
     return row[0]
 
 
-def add_ranking(conn, topic):
-    return
+def get_object_rank(conn, table_name, id_column, object_id):
+    """
+    Return the current rank for an artist, album, or song.
+
+    Requires the ranking table name, foreign-key column name, and the object's ID.
+    """
+    row = conn.execute(f"""
+        SELECT rank
+        FROM {table_name}
+        WHERE {id_column} = ?
+    """, (object_id,)).fetchone()
+
+    if row is None:
+        return None
+    
+    return row[0]
 
 
-def update_ranking(conn, topic):
-    return
+def shift_rankings_down(conn, table_name, id_column, start_rank, end_rank):
+    """
+    Move rankings down by one.
+
+    Used when inserting or moving an item into a higher position.
+    """
+    rows_to_shift = conn.execute(f"""
+        SELECT {id_column}, rank
+        FROM {table_name}
+        WHERE rank >= ?
+            AND rank < ?
+        ORDER BY rank DESC
+    """, (start_rank, end_rank)).fetchall()
+
+    for ranked_object_id, current_rank in rows_to_shift:
+        conn.execute(f"""
+            UPDATE {table_name}
+            SET rank = ?
+            WHERE {id_column} = ?
+        """, (current_rank + 1, ranked_object_id))
+
+
+def shift_rankings_up(conn, table_name, id_column, start_rank, end_rank):
+    """
+    Move rankings up by one.
+
+    Used when deleting an item or moving an item to a lower position.
+    """
+    rows_to_shift = conn.execute(f"""
+        SELECT {id_column}, rank
+        FROM {table_name}
+        WHERE rank > ?
+            AND rank <= ?
+        ORDER BY rank ASC
+    """, (start_rank, end_rank)).fetchall()
+
+    for ranked_object_id, current_rank in rows_to_shift:
+        conn.execute(f"""
+            UPDATE {table_name}  
+            SET rank = ?
+            WHERE {id_column} = ?
+        """, (current_rank - 1, ranked_object_id))
+
+
+def add_ranking(conn, ranking_type):
+    print("""
+Add Ranking
+-----------
+""")
+    # Get or create the artist, album, or song to be ranked.
+    # Then store its ID so it can be added to the correct rankings table.
+
+    # Add artists
+    if ranking_type == "artists":
+        ranking_table = "artist_rankings"
+        id_column = "artist_id"
+
+        artist_name = input("Which artist would you like to add to the rankings? ").strip()
+        display_name = artist_name
+
+        try:
+            object_id = get_artist_id(conn, artist_name)
+        except ValueError:
+            create_object = input(f"{artist_name} is not in the database. Add this artist? (yes/no): ").strip().lower()
+
+            if create_object != "yes":
+                print(f"{artist_name} was not added.")
+                return
+
+            conn.execute("""
+                INSERT INTO artists (name)
+                VALUES (?)
+            """, (artist_name,))
+
+            object_id = get_artist_id(conn, artist_name)
+    
+    # Add albums
+    elif ranking_type == "albums":
+        ranking_table = "album_rankings"
+        id_column = "album_id"
+
+        album_title = input("Which album would you like to add to the rankings? ").strip()
+        artist_name = input("Who is the album by? ").strip()
+
+        display_name = f"{album_title} by {artist_name}"
+
+        try:
+            object_id = get_album_id(conn, artist_name, album_title)
+        except ValueError:
+            create_object = input(f"{display_name} is not in the database. Add this album? (yes/no): ").strip().lower()
+
+            if create_object != "yes":
+                print(f"{display_name} was not added.")
+                return
+
+            try:
+                artist_id = get_artist_id(conn, artist_name)
+            except ValueError:
+                print(f"{artist_name} is not in the database. Add the artist first.")
+                return
+
+            while True:
+                try:
+                    album_year = int(input(f"What year was {album_title} released? ").strip())
+                    break
+                except ValueError:
+                    print("Please enter a whole number.")
+
+            conn.execute("""
+                INSERT INTO albums (title, artist_id, release_year)
+                VALUES (?, ?, ?)
+            """, (album_title, artist_id, album_year))
+
+            object_id = get_album_id(conn, artist_name, album_title)
+
+    # Add songs
+    else:
+        ranking_table = "song_rankings"
+        id_column = "song_id"
+
+        song_title = input("Which song would you like to add to the rankings? ").strip()
+        album_title = input("Which album was the song released under? ").strip()
+        artist_name = input("Who is the song by? ").strip()
+
+        display_name = f"{song_title} by {artist_name}"
+
+        try:
+            object_id = get_song_id(conn, artist_name, song_title)
+        except ValueError:
+            create_object = input(f"{display_name} is not in the database. Add this song? (yes/no): ").strip().lower()
+
+            if create_object != "yes":
+                print(f"{display_name} was not added.")
+                return
+            
+            try:
+                album_id = get_album_id(conn, artist_name, album_title)
+            except ValueError:
+                print(f"{artist_name} or {album_title} is not in the database. Add both first.")
+                return
+            
+            conn.execute("""
+                INSERT INTO songs (title, album_id)
+                VALUES (?, ?)          
+            """, (song_title, album_id))
+
+            object_id = get_song_id(conn, artist_name, song_title)
+
+    # Call the get_object_rank function to get the object's rank.
+    current_rank = get_object_rank(conn, ranking_table, id_column, object_id)
+
+    # Hanle objects that are already ranked
+    if current_rank is not None:
+        print(f"{display_name} is already ranked #{current_rank}.")
+        return
+    
+    while True:
+        try:
+            new_rank = int(input(f"What rank should {display_name} have? ").strip())
+            break
+        except ValueError:
+            print("Please enter a number between 1 and 20.")
+    
+    if new_rank not in range(1, 21):
+        print(f"Invalid input: {new_rank}")
+        return
+    
+    # Delete the row ranked 20 so it is not moved out of bounds
+    conn.execute(f"""
+        DELETE FROM {ranking_table}
+        WHERE rank = 20
+    """)
+
+    # Shift affected items down.
+    shift_rankings_down(conn, ranking_table, id_column, new_rank, 20)
+
+    # Add the object to the table at the specified rank
+    conn.execute(f"""
+        INSERT INTO {ranking_table} ({id_column}, rank)
+        VALUES (?, ?)
+    """, (object_id, new_rank))
+
+    conn.commit()
+
+    print(f"{display_name} is now ranked #{new_rank}.")
+
+
+def update_ranking(conn, ranking_type):
+    print("""
+Update Ranking
+-------------- 
+""")
+    
+    # Get the ID of the artist, album, or song to update.
+    if ranking_type == "artists":
+        table_name = "artist_rankings"
+        id_column = "artist_id"
+
+        artist_name = input("Whose ranking would you like to update? ").strip()
+
+        try:
+            object_id = get_artist_id(conn, artist_name)
+        except ValueError:
+            print(f"Invalid input: {artist_name}")
+            return
+        
+        display_name = artist_name
+
+    elif ranking_type == "albums":
+        table_name = "album_rankings"
+        id_column = "album_id"
+
+        album_title = input("Which album's ranking would you like to update? ").strip()
+        artist_name = input("Who is the album by? ").strip()
+
+        try:
+            object_id = get_album_id(conn, artist_name, album_title)
+        except ValueError:
+            print(f"Invalid input: {album_title} by {artist_name}")
+            return
+        
+        display_name = f"{album_title} by {artist_name}"
+
+    else:
+        table_name = "song_rankings"
+        id_column = "song_id"
+
+        song_title = input("Which song's ranking would you like to update? ").strip()
+        artist_name = input("Who is the song by? ").strip()
+
+        try:
+            object_id = get_song_id(conn, artist_name, song_title)
+        except ValueError:
+            print(f"Invalid input: {song_title} by {artist_name}")
+            return
+
+        display_name = f"{song_title} by {artist_name}"
+
+    # Call the get_object_rank function to get the object's rank.
+    current_rank = get_object_rank(conn, table_name, id_column, object_id)
+
+    if current_rank is None:
+        print(f"{display_name} is not currently ranked.")
+        return
+
+    noun = "their" if ranking_type == "artists" else "its"
+
+    while True:
+        print(f"{display_name} is currently ranked {current_rank}")
+
+        # Convert the user's input to an integer.
+        try:
+            updated_rank = int(input(f"What should {noun} ranking be? ").strip())
+        except ValueError:
+            print("Please enter a number between 1 and 20.")
+            return
+
+        if updated_rank == current_rank:
+            print("Rank unchanged.")
+            return
+        
+        elif updated_rank not in range(1, 21):
+            print(f"Invalid input: {updated_rank}")
+            return
+        
+        else:
+            # Move selected item out of the way temporarily.
+            conn.execute(f"""
+                UPDATE {table_name}
+                SET rank = 99
+                WHERE {id_column} = ?
+            """, (object_id,))
+
+            if updated_rank < current_rank:
+                # Shift affected items down.
+                shift_rankings_down(conn, table_name, id_column, updated_rank, current_rank)
+
+            elif updated_rank > current_rank:
+                # Shift affected items up.
+                shift_rankings_up(conn, table_name, id_column, current_rank, updated_rank)
+
+            # Put selected item into its new rank.
+            conn.execute(f"""
+                UPDATE {table_name}
+                SET rank = ?
+                WHERE {id_column} = ?
+            """, (updated_rank, object_id))
+
+            conn.commit()
+            break
+
+    print(f"{display_name} is now ranked #{updated_rank}.")
 
 
 def delete_ranking(conn, ranking_type):
@@ -454,12 +749,12 @@ Remove Ranking
 --------------
 """)
 
-    # Find the ID of the object to be deleted.
+    # Get the ID of the artist, album, or song to remove from the rankings.
     if ranking_type == "artists":
         table_name = "artist_rankings"
         id_column = "artist_id"
 
-        artist_name = input("Who would you like to remove? ").strip()
+        artist_name = input("Which artist would you like to remove from the rankings? ").strip()
 
         try:
             object_id = get_artist_id(conn, artist_name)
@@ -473,7 +768,7 @@ Remove Ranking
         table_name = "album_rankings"
         id_column = "album_id"
 
-        album_title = input("Which album would you like to remove? ").strip()
+        album_title = input("Which album would you like to remove from the rankings? ").strip()
         artist_name = input("Who is the album by? ").strip()
 
         try:
@@ -488,7 +783,7 @@ Remove Ranking
         table_name = "song_rankings"
         id_column = "song_id"
 
-        song_title = input("Which song would you like to remove? ").strip()
+        song_title = input("Which song would you like to remove from the rankings? ").strip()
         artist_name = input("Who is the song by? ").strip()
 
         try:
@@ -499,39 +794,20 @@ Remove Ranking
 
         display_name = f"{song_title} by {artist_name}"
 
-    # Find the object's current rank.
-    row = conn.execute(f"""
-        SELECT rank
-        FROM {table_name}
-        WHERE {id_column} = ?
-    """, (object_id,)).fetchone()
+    # Call the get_object_rank function to get the object's rank.
+    deleted_rank = get_object_rank(conn, table_name, id_column, object_id)
 
-    if row is None:
+    if deleted_rank is None:
         print(f"{display_name} is not currently ranked.")
         return
-
-    # Delete the object's row from the ranking table.
-    deleted_rank = row[0]
 
     conn.execute(f"""
         DELETE FROM {table_name}
         WHERE {id_column} = ?
     """, (object_id,))
 
-    # Move the items ranked below the object up by one.
-    rows_to_shift = conn.execute(f"""
-        SELECT {id_column}, rank
-        FROM {table_name}
-        WHERE rank > ?
-        ORDER BY rank
-    """, (deleted_rank,)).fetchall()
-
-    for ranked_object_id, current_rank in rows_to_shift:
-        conn.execute(f"""
-            UPDATE {table_name}
-            SET rank = ?
-            WHERE {id_column} = ?
-        """, (current_rank - 1, ranked_object_id))
+    # Shift all the items that were below the object up by one.
+    shift_rankings_up(conn, table_name, id_column, deleted_rank, 20)
 
     # Commit changes.
     conn.commit()
@@ -693,7 +969,7 @@ def display_ranking_action_menu(ranking_type):
 
     print(f"""
 Edit Top 20 {display_name}
----------------------------
+--------------------------
 1. Add a Ranking
 2. Update a Ranking
 3. Remove a Ranking
