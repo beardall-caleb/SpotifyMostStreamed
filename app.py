@@ -440,6 +440,105 @@ def get_song_id(conn, artist_name, title):
     return row[0]
 
 
+def add_ranking(conn, topic):
+    return
+
+
+def update_ranking(conn, topic):
+    return
+
+
+def delete_ranking(conn, ranking_type):
+    print("""
+Remove Ranking
+--------------
+""")
+
+    # Find the ID of the object to be deleted.
+    if ranking_type == "artists":
+        table_name = "artist_rankings"
+        id_column = "artist_id"
+
+        artist_name = input("Who would you like to remove? ").strip()
+
+        try:
+            object_id = get_artist_id(conn, artist_name)
+        except ValueError:
+            print(f"Invalid input: {artist_name}")
+            return
+
+        display_name = artist_name
+
+    elif ranking_type == "albums":
+        table_name = "album_rankings"
+        id_column = "album_id"
+
+        album_title = input("Which album would you like to remove? ").strip()
+        artist_name = input("Who is the album by? ").strip()
+
+        try:
+            object_id = get_album_id(conn, artist_name, album_title)
+        except ValueError:
+            print(f"Invalid input: {album_title} by {artist_name}")
+            return
+
+        display_name = f"{album_title} by {artist_name}"
+
+    else:
+        table_name = "song_rankings"
+        id_column = "song_id"
+
+        song_title = input("Which song would you like to remove? ").strip()
+        artist_name = input("Who is the song by? ").strip()
+
+        try:
+            object_id = get_song_id(conn, artist_name, song_title)
+        except ValueError:
+            print(f"Invalid input: {song_title} by {artist_name}")
+            return
+
+        display_name = f"{song_title} by {artist_name}"
+
+    # Find the object's current rank.
+    row = conn.execute(f"""
+        SELECT rank
+        FROM {table_name}
+        WHERE {id_column} = ?
+    """, (object_id,)).fetchone()
+
+    if row is None:
+        print(f"{display_name} is not currently ranked.")
+        return
+
+    # Delete the object's row from the ranking table.
+    deleted_rank = row[0]
+
+    conn.execute(f"""
+        DELETE FROM {table_name}
+        WHERE {id_column} = ?
+    """, (object_id,))
+
+    # Move the items ranked below the object up by one.
+    rows_to_shift = conn.execute(f"""
+        SELECT {id_column}, rank
+        FROM {table_name}
+        WHERE rank > ?
+        ORDER BY rank
+    """, (deleted_rank,)).fetchall()
+
+    for ranked_object_id, current_rank in rows_to_shift:
+        conn.execute(f"""
+            UPDATE {table_name}
+            SET rank = ?
+            WHERE {id_column} = ?
+        """, (current_rank - 1, ranked_object_id))
+
+    # Commit changes.
+    conn.commit()
+
+    print(f"{display_name} has been removed from the ranking.")
+    
+
 def get_featured_artists(conn, song_id):
     """Return a list of featured artist names for a song."""
     rows = conn.execute("""
@@ -448,7 +547,6 @@ def get_featured_artists(conn, song_id):
         JOIN artists AS art
             ON f.featured_artist_id = art.id
         WHERE f.song_id = ?
-        ORDER BY art.name
     """, (song_id,)).fetchall()
 
     return [row[0] for row in rows]
@@ -532,21 +630,96 @@ def display_top_20_songs(conn):
     print("\nSpotify's Top 20 Most Streamed Songs:")
 
     for song_id, rank, song_title, album_title, artist_name in rows:
-        # Identifies a song as a single if the song title and album title are the same
+        featured_artists = get_featured_artists(conn, song_id)
+
+        # Start building the display line with the rank, song title, and primary artist.
+        line = f"{rank}. {song_title} by {artist_name}"
+
+        # Add featured artists when the song has one or more features.
+        if len(featured_artists) == 1:
+            line += f" featuring {featured_artists[0]}"
+        elif len(featured_artists) == 2:
+            line += f" featuring {featured_artists[0]} and {featured_artists[1]}"
+        elif len(featured_artists) > 2:
+            line += f" featuring {', '.join(featured_artists[:-1])}, and {featured_artists[-1]}"
+
+        # Treat the song as a single when the song title and album title match.
         if song_title != album_title:
-            print(f"{rank}. {song_title} by {artist_name} from {album_title}")
+            line += f" from {album_title}"
         else:
-            print(f"{rank}. {song_title} by {artist_name} as a single")
+            line += " as a single"
+
+        print(line)
+
+
+def edit_rankings(conn):
+    while True:
+        display_ranking_type_menu()
+        ranking_type_choice = input("Which ranking list would you like to edit? ").strip()
+
+        if ranking_type_choice == "1":
+            ranking_type = "artists"
+        elif ranking_type_choice == "2":
+            ranking_type = "albums"
+        elif ranking_type_choice == "3":
+            ranking_type = "songs"
+        elif ranking_type_choice == "4":
+            return
+        else:
+            print("Please choose a valid option.")
+            continue
+
+        while True:
+            display_ranking_action_menu(ranking_type)
+            action_choice = input("Choose an action: ").strip()
+
+            if action_choice == "1":
+                add_ranking(conn, ranking_type)
+                return
+            elif action_choice == "2":
+                update_ranking(conn, ranking_type)
+                return
+            elif action_choice == "3":
+                delete_ranking(conn, ranking_type)
+                return
+            elif action_choice == "4":
+                break
+            else:
+                print("Please choose a valid option.")
+    
+    
+def display_ranking_action_menu(ranking_type):
+    display_name = ranking_type.capitalize()
+
+    print(f"""
+Edit Top 20 {display_name}
+---------------------------
+1. Add a Ranking
+2. Update a Ranking
+3. Remove a Ranking
+4. Return to Ranking List Menu   
+""")
+
+def display_ranking_type_menu():
+    print("""
+Edit Rankings
+---------------------
+1. Artists
+2. Albums
+3. Songs
+4. Return to Main Menu
+""")
 
 
 def display_main_menu():
     print("""
 Spotify's Most Streamed Music of All Time
 -----------------------------------------
-1. View the Top 20 Most Streamed Artists
-2. View the Top 20 Most Streamed Albums
-3. View the Top 20 Most Streamed Songs
-4. Come Back Later
+1. View Top 20 Artists
+2. View Top 20 Albums
+3. View Top 20 Songs
+4. Edit Rankings
+5. Exit
 """)
     
 
@@ -559,7 +732,7 @@ def main():
 
         while True:
             display_main_menu()
-            choice = input("What would you like to do?: ").strip()
+            choice = input("Choose an option: ").strip()
 
             if choice == "1":
                 display_top_20_artists(conn)
@@ -568,6 +741,8 @@ def main():
             elif choice == "3":
                 display_top_20_songs(conn)
             elif choice == "4":
+                edit_rankings(conn)
+            elif choice == "5":
                 print("See you soon!")
                 break
             else:
